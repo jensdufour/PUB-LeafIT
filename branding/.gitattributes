@@ -1,0 +1,4 @@
+/source/OFL.txt text eol=lf
+*.svg text eol=lf
+*.ttf binary
+*.png binary

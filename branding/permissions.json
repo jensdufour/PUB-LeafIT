@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "applicationNameSuffix": " Naming Automation",
+  "certificateLifetimeMonths": 6,
+  "resources": [
+    {
+      "name": "Microsoft Graph",
+      "appId": "00000003-0000-0000-c000-000000000000",
+      "applicationPermissions": [
+        "Organization.ReadWrite.All",
+        "Group.ReadWrite.All",
+        "Application.Read.All",
+        "Sites.ReadWrite.All",
+        "DeviceManagementServiceConfig.ReadWrite.All"
+      ]
+    },
+    {
+      "name": "Exchange Online",
+      "appId": "00000002-0000-0ff1-ce00-000000000000",
+      "applicationPermissions": ["Exchange.ManageAsApp"]
+    },
+    {
+      "name": "SharePoint Online",
+      "appId": "00000003-0000-0ff1-ce00-000000000000",
+      "applicationPermissions": ["Sites.FullControl.All"]
+    }
+  ],
+  "directoryRoles": [
+    "Exchange Recipient Administrator",
+    "SharePoint Administrator"
+  ],
+  "bootstrapDelegatedPermissions": [
+    "Application.ReadWrite.All",
+    "AppRoleAssignment.ReadWrite.All",
+    "RoleManagement.ReadWrite.Directory"
+  ],
+  "doesNotAuthorizeSecurityLicenseOrDeviceChanges": true
+}
