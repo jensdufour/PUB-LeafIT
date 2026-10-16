@@ -1,0 +1,37 @@
+{
+  "workload": "nme",
+  "location": "swedencentral",
+  "brandSource": "../branding/brand.json",
+  "brandAssetsGuide": "../branding/README.md",
+  "installation": {
+    "owner": "Nerdio Marketplace deployment",
+    "publisher": "nerdio",
+    "offer": "nerdio_wvd_manager",
+    "plan": "nwm-plan",
+    "version": "8.1.1",
+    "templateSha256": "12B00FF894A244BA3BDD41131E8A0BE5C8DC51F20D4270E0320B746641346410",
+    "resourceGroupMustBeEmpty": true
+  },
+  "access": {
+    "publicManagementPortal": true,
+    "authentication": "NMe Entra sign-in",
+    "appServiceAuthenticationEnabled": false
+  },
+  "hardening": {
+    "scriptedAction": "Enable Private Endpoints",
+    "azureRunbookExecutionMode": "Inline Script",
+    "parameters": {
+      "MakeAppServicePrivate": false,
+      "CssaStorageAccount": "Private",
+      "SkipDNS": false
+    },
+    "ftpEnabled": false,
+    "sqlAuthentication": "Entra-only",
+    "peerAllLinkedNetworks": false
+  },
+  "cost": {
+    "acceptGovernanceDownsizing": true,
+    "preserveRecommendedSizingWithExemption": false,
+    "automaticScaleBackUp": false
+  }
+}
