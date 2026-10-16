@@ -45,6 +45,19 @@ Existing `.env` inputs are `TARGET_TENANT_ID`, `TARGET_SUBSCRIPTION_ID`, `TARGET
 
 Review the private group/prefix and what-if before creation. The wrapper selects vendor parameters `configurePrivateEndpoints=true` and `privateWebApp=false`, retaining the template's SQL managed-identity/Entra-only configuration and disabled FTP. Vendor address defaults are used only after checking existing subscription VNets for overlap; an overlap stops rather than inventing a new range. No peering or DC/network ownership change is included. Check bootstrap roles, Sweden Central availability/quota, and the [governance rules](../README.md#governance-and-expiry). The vendor readiness test creates resources and is not a read-only check. No sizing exception is selected.
 
+## Custom Domain Alias
+
+[Set-CustomDomain.ps1](Set-CustomDomain.ps1) resolves `access.customDomainLabel` beneath the private target DNS zone. It follows Nerdio's [custom-URL procedure](https://nmehelp.getnerdio.com/hc/en-us/articles/26124345450509), preserving the default hostname and all existing Entra web authentication settings while adding the custom root and `/signin-oidc` redirect URIs.
+
+```powershell
+& ./nme/Set-CustomDomain.ps1 -CheckOnly
+& ./nme/Set-CustomDomain.ps1 -ConnectGraph
+& ./nme/Set-CustomDomain.ps1 -ConnectGraph -Apply
+& ./nme/Set-CustomDomain.ps1 -ConnectGraph -Verify
+```
+
+Preview is read-only. `-ConnectGraph` explicitly reuses the verified Azure session without interactive sign-in or consent. Apply merges only the alias CNAME and `asuid` TXT into ignored DNS desired state, reuses the existing foundation deployment, and refuses conflicting owners or unrelated DNS drift. [custom-domain.bicep](custom-domain.bicep) owns only the additive hostname binding and free App Service managed certificate, in separate hostname, certificate, and SNI-binding stages. No vendor app settings, EasyAuth, plan sizing, backend access, or existing hostname are changed. Certificate issuance can remain pending; inspect readback before retrying, without deleting or recreating a pending certificate. Keep the direct CNAME and public domain-validation reachability for automatic certificate renewal. Verification checks public DNS, TLS, and target-bound sign-in redirects on both URLs; actual authenticated browser acceptance remains separate. Evidence and before-state stay under ignored `private/nme/custom-domain/`.
+
 ## Marketplace And Onboarding
 
 1. **Resolve and preview automatically.** Use the commands above. The current package must match the reviewed plan/version and SHA-256. A changed or unavailable package stops; there is no portal/export fallback or improvised template.

@@ -15,7 +15,8 @@
   "access": {
     "publicManagementPortal": true,
     "authentication": "NMe Entra sign-in",
-    "appServiceAuthenticationEnabled": false
+    "appServiceAuthenticationEnabled": false,
+    "customDomainLabel": "nerdio"
   },
   "hardening": {
     "scriptedAction": "Enable Private Endpoints",
