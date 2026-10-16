@@ -33,8 +33,10 @@ if ($CheckOnly) {
     foreach ($owner in $owners) { $null = & (Join-Path $repo $owner.Path) -CheckOnly }
     if (-not (Get-LeafNamingSummary @([pscustomobject]@{ Status = 'NoChange' }) $true).AllRequestedSurfacesConverged) { throw 'A converged owner must be NoChange.' }
     if (-not (Get-LeafNamingSummary @([pscustomobject]@{ Status = 'NoChange' }, [pscustomobject]@{ Status = 'NotRequested' }) $true).AllRequestedSurfacesConverged) { throw 'An unrequested hostname migration must not block the custom-domain workflow.' }
-    $blockedFixture = Get-LeafNamingSummary @([pscustomobject]@{ Status = 'NoChange' }, [pscustomobject]@{ Status = 'BlockedMissingReviewedPrefix' }) $true
-    if ($blockedFixture.AllRequestedSurfacesConverged -or $blockedFixture.Status -cne 'IncompleteWithExplicitBlockers') { throw 'Blocked surfaces must never be reported as complete.' }
+    foreach ($blockedStatus in @('BlockedMissingReviewedPrefix', 'BlockedReadOnlyOrganizationName')) {
+        $blockedFixture = Get-LeafNamingSummary @([pscustomobject]@{ Status = 'NoChange' }, [pscustomobject]@{ Status = $blockedStatus }) $true
+        if ($blockedFixture.AllRequestedSurfacesConverged -or $blockedFixture.Status -cne 'IncompleteWithExplicitBlockers') { throw 'Blocked surfaces must never be reported as complete.' }
+    }
     [pscustomobject]@{ OfflineChecksPassed = $true; ExistingOwnersReused = $owners.Count; FalseCompletionRejected = $true; TenantAccess = $false }
     return
 }

@@ -48,12 +48,14 @@ if ($CheckOnly) {
     $patch = Get-LeafBrandingPatch $fixture $desired
     if ($patch.Count -ne 1 -or -not $patch.ContainsKey('signInPageText')) { throw 'Only changed owned properties may be patched.' }
     if ((Get-LeafBrandingPatch $null $desired).Count -ne 3 -or $images.Count -ne 6) { throw 'The clean-tenant branding contract is incomplete.' }
-    $organizationFixture = [pscustomobject]@{ displayName = 'Previous Example'; technicalNotificationMails = @('admin@example.com') }
-    $namePatch = Get-LeafBrandingPatch $organizationFixture @{ displayName = $brand.name }
-    if ($namePatch.Count -ne 1 -or -not $namePatch.ContainsKey('displayName')) { throw 'Only the organization display name may be changed by name reconciliation.' }
+    foreach ($initialName in @('Example Labs', "Example's New Tenant", $brand.name.ToLowerInvariant(), $null)) {
+        $organizationFixture = [pscustomobject]@{ displayName = $initialName; technicalNotificationMails = @('admin@example.com') }
+        $namePatch = Get-LeafBrandingPatch $organizationFixture @{ displayName = $brand.name }
+        if ($namePatch.Count -ne 1 -or -not $namePatch.ContainsKey('displayName') -or $namePatch.displayName -cne $brand.name) { throw 'Name verification must detect any nonmatching initial name without a previous-brand input.' }
+    }
     $organizationFixture.displayName = $brand.name
     if ((Get-LeafBrandingPatch $organizationFixture @{ displayName = $brand.name }).Count) { throw 'A converged organization name must be NoChange.' }
-    [pscustomobject]@{ OfflineChecksPassed = $true; ImagesValidated = $images.Count; ApiVersion = 'v1.0'; TenantAccess = $false }
+    [pscustomobject]@{ OfflineChecksPassed = $true; ImagesValidated = $images.Count; OrganizationNameCasesValidated = 5; PreviousOrganizationNameRequired = $false; ApiVersion = 'v1.0'; TenantAccess = $false }
     return
 }
 
@@ -84,11 +86,14 @@ try {
     $organizationPath = '/v1.0/organization/' + $settings.TARGET_TENANT_ID + '?$select=id,displayName,verifiedDomains,privacyProfile,technicalNotificationMails,marketingNotificationEmails,securityComplianceNotificationMails,securityComplianceNotificationPhones'
     $organization = Invoke-LeafTargetGraph -Settings $settings -Path $organizationPath
     if ($organization.id -ne $settings.TARGET_TENANT_ID) { throw 'The organization-name target does not match private inputs.' }
-    $namePending = [string]$organization.displayName -cne $brand.name
+    $namePending = (Get-LeafBrandingPatch $organization @{ displayName = $brand.name }).Count -gt 0
+    $report.DesiredOrganizationName = $brand.name
+    $report.OrganizationNameMatches = -not $namePending
+    $report.ManualNameChangeRequired = $namePending
     if ($NameOnly) {
         $report.Verified = -not $namePending
         $report.Status = if ($namePending) { 'BlockedReadOnlyOrganizationName' } else { 'NoChange' }
-        [pscustomobject]@{ Mode = 'ReadOnlyNameVerification'; Status = $report.Status; OrganizationNameMatches = -not $namePending; SupportedGraphNameWrite = $false; TenantChanged = $false }
+        [pscustomobject]@{ Mode = 'ReadOnlyNameVerification'; Status = $report.Status; DesiredOrganizationName = $brand.name; OrganizationNameMatches = -not $namePending; ManualNameChangeRequired = $namePending; SupportedGraphNameWrite = $false; TenantChanged = $false }
         return
     }
     $basePath = '/v1.0/organization/' + $settings.TARGET_TENANT_ID + '/branding'

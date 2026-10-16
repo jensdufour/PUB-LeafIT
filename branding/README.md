@@ -75,6 +75,21 @@ Sources: [Graph application grants](https://learn.microsoft.com/graph/api/servic
 
 Source-brand input is private and literal, not a regex or a tenant-wide replacement engine. Missing or ambiguous ownership, address collisions, synchronization, role-assignable mail groups and concurrent changes stop the affected owner. Resource accounts and the protected administrator are excluded. Native clients may take time to show cosmetic updates; API readback is not interactive-client acceptance.
 
+## Manual Tenant Name
+
+**Tenant Name is a manual bootstrap step for every new tenant.** Verify the tenant ID, open **Entra ID > Overview > Properties > Name**, set the complete `name` from [brand.json](brand.json), and save it manually. The starting name can be anything; this is not a replacement of one specific previous brand. Preserve any `TARGET_PREVIOUS_ORGANIZATION_NAME` input already captured for separate group/subscription migrations; name-only verification does not require it.
+
+The documented [organization update API](https://learn.microsoft.com/graph/api/organization-update?view=graph-rest-1.0) does not support writing `displayName`. The unverified browser writer and its dependencies are retired. Do not add Node.js, Playwright, browser-debugging sessions, hidden portal calls, retired Azure AD Graph, or broader directory grants to automate this property. This manual change does not rename domains, user sign-ins or SharePoint hostnames.
+
+In the existing target-authenticated PowerShell session, verify the saved name read-only:
+
+```powershell
+& ./branding/Initialize-Session.ps1 -Connect
+& ./identity/entra/Deploy-Branding.ps1 -NameOnly
+```
+
+A matching complete name, including casing, returns `NoChange`. A mismatch returns `BlockedReadOnlyOrganizationName` and `ManualNameChangeRequired = true`; correct the name manually and rerun verification. `DesiredOrganizationName` comes from the brand definition. The naming runner never attempts a tenant-name write or reports a mismatch as complete.
+
 ## Company Portal Recovery
 
 The beta endpoint can reset `showConfigurationManagerApps`, `showDisplayNameNextToLogo` and `companyPortalBlockedActions` when omitted. The writer carries their exact old values with the name update and checks every other field. Do not resubmit unrelated image/default-profile objects or relax preservation to force success. This entity is not exposed by current service metadata, so current schema/readback tests remain important.
@@ -94,8 +109,6 @@ Resume reads the target and original proof only, checks restored fields/names/as
 [The persona definition](../identity/users/desired.json) contains approved fictional alias keys. [The separate user deployer](../identity/users/Deploy.ps1) requires ready unique licensed cloud users and cloud-owned user mailboxes. It performs a pilot before any pending bulk write, preserves SMTP aliases, licenses/roles and protected-admin identity, and supports distinct client-tested versus explicitly risk-accepted acknowledgement. Real sign-in, Outlook, Teams, OneDrive/mobile and admin acceptance are not inferred from API success. The naming app has no user-write permission: use a separately authorized correct-target operator session for this optional workflow.
 
 ## Remaining Limits
-
-Graph rejects `organization.displayName` as read-only. A mismatch is reported automatically; the supported Entra properties UI remains necessary to change it. Do not request broader directory privileges, use retired Azure AD Graph, or invoke an undocumented portal endpoint to conceal the limitation.
 
 SharePoint hostname migration is not part of normal custom-domain naming. If explicitly selected later, reviewed private `TARGET_SHAREPOINT_DOMAIN_PREFIX` and timezone-explicit `TARGET_SHAREPOINT_RENAME_AT` inputs are needed, along with a verified destination native domain, native eligibility/dependency review and maintenance approval. No prefix/window is guessed. Native WhatIf is not full eligibility, client or recovery acceptance. Only `-Apply -ScheduleHostnameRename` submits a job; intent is written privately first and prevents blind resubmission. An accepted submission is not authoritative hostname convergence, and changing back is unsupported. No hostname job is part of this publication's normal replay contract.
 

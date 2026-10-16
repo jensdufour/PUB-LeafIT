@@ -4,6 +4,8 @@ Reusable LeafIT artwork and guarded Microsoft cloud naming automation. This publ
 
 **This is not a fully automated tenant rebuild.** Supported naming owners have preview, apply, readback and repeat-run checks. The Entra organization display name is read-only through Microsoft Graph, Microsoft 365 themes/arbitrary content are not implemented, and a second clean tenant has not passed acceptance. Those limits are returned explicitly, never hidden behind a successful owner result.
 
+**Manual tenant name:** set **Entra ID > Overview > Properties > Name** to the complete desired name from [branding/brand.json](branding/brand.json) for every new tenant, regardless of its initial name. Follow the [manual step and read-only verification](branding/README.md#manual-tenant-name); tenant-name writes are intentionally not automated.
+
 ## Quick Start
 
 Use PowerShell **7.6 on Windows**, Git, Az.Accounts **5.3.3+**, Microsoft.Graph.Authentication **2.37.0+**, ExchangeOnlineManagement **3.9.2+**, and the native Windows certificate cmdlets. Native SharePoint uses Microsoft.Online.SharePoint.PowerShell **16.0.27709.12000**. Install prerequisites for the execution account before running live commands; no script silently installs modules or switches tenants.
@@ -36,6 +38,11 @@ Disable-AzContextAutosave -Scope Process | Out-Null
 Connect-AzAccount -Tenant $settings.TARGET_TENANT_ID -Subscription $settings.TARGET_SUBSCRIPTION_ID -UseDeviceAuthentication -Scope Process
 Assert-LeafTargetContext $settings (Get-AzContext)
 & ./branding/Deploy.ps1 -Bootstrap -Apply
+```
+
+After bootstrap has captured any previous brand needed for the separate group/subscription migrations, complete the [manual tenant-name step](branding/README.md#manual-tenant-name). Preserve that private previous-brand input after changing the tenant label. Then preview and apply the supported naming owners:
+
+```powershell
 & ./branding/Deploy.ps1
 & ./branding/Deploy.ps1 -Apply
 & ./branding/Deploy.ps1 -Apply
