@@ -1,6 +1,6 @@
 #requires -Version 7.6
 [CmdletBinding(PositionalBinding = $false)]
-param([switch]$Run, [switch]$OperatorApproved, [ValidateSet('initial', 'server-name-shape', 'logon-audit')][string]$Attempt = 'initial', [switch]$CheckOnly)
+param([switch]$Run, [switch]$OperatorApproved, [ValidateSet('initial', 'server-name-shape', 'logon-audit', 'active-session')][string]$Attempt = 'initial', [switch]$CheckOnly)
 
 $ErrorActionPreference = $WarningPreference = 'Stop'
 $VerbosePreference = $DebugPreference = $ProgressPreference = 'SilentlyContinue'
@@ -65,7 +65,19 @@ try {
         }
         foreach ($field in @('LogonTypes', 'AuthenticationPackages', 'LogonProcesses')) { $audit[$field] = @($audit[$field] | Sort-Object -Unique) }
     }
-    'LEAFIT_SMB_CLIENT_METADATA=' + (@{ Status = 'ReadOnlyClientMetadata'; Nonce = $meta.Nonce; ExactMemberSystemVerified = $true; RequireSecuritySignature = [bool]$configuration.RequireSecuritySignature; EnableSecuritySignature = [bool]$configuration.EnableSecuritySignature; EnableInsecureGuestLogons = [bool]$configuration.EnableInsecureGuestLogons; Channels = $rows; LogonAudit = $audit; ConfigurationWrites = 0; CredentialReads = 0; SmbRequests = 0; RawEventsReturned = $false } | ConvertTo-Json -Depth 6 -Compress)
+    $interactive = @{ QuerySucceeded = $false; ExactAdministratorSessionCount = 0; LogonTypes = @() }
+    if ($meta.ActiveSession -eq $true) {
+        if ($meta.AdministratorSidSha256 -cnotmatch '^[A-F0-9]{64}$') { throw 'ExactSessionAccountScopeRequired' }
+        $sessions = @(Get-CimInstance Win32_LogonSession -Filter 'LogonType=2 OR LogonType=10' -OperationTimeoutSec 5 -ErrorAction Stop)
+        if ($sessions.Count -gt 64) { throw 'BoundedSessionMetadataRequired' }
+        foreach ($session in $sessions) {
+            $accounts = @(Get-CimAssociatedInstance -InputObject $session -Association Win32_LoggedOnUser -ResultClassName Win32_Account -OperationTimeoutSec 5 -ErrorAction Stop)
+            if (@($accounts | Where-Object { $_.SID -and (GetClientHash $_.SID) -ceq $meta.AdministratorSidSha256 }).Count) { $interactive.ExactAdministratorSessionCount++; $interactive.LogonTypes += [int]$session.LogonType }
+        }
+        $interactive.LogonTypes = @($interactive.LogonTypes | Sort-Object -Unique)
+        $interactive.QuerySucceeded = $true
+    }
+    'LEAFIT_SMB_CLIENT_METADATA=' + (@{ Status = 'ReadOnlyClientMetadata'; Nonce = $meta.Nonce; ExactMemberSystemVerified = $true; RequireSecuritySignature = [bool]$configuration.RequireSecuritySignature; EnableSecuritySignature = [bool]$configuration.EnableSecuritySignature; EnableInsecureGuestLogons = [bool]$configuration.EnableInsecureGuestLogons; Channels = $rows; LogonAudit = $audit; ActiveSession = $interactive; ConfigurationWrites = 0; CredentialReads = 0; SmbRequests = 0; RawEventsReturned = $false } | ConvertTo-Json -Depth 6 -Compress)
 } catch {
     'LEAFIT_SMB_CLIENT_METADATA=' + (@{ Status = 'Stopped'; ErrorType = $_.Exception.GetType().Name; ConfigurationWrites = 0; CredentialReads = 0; SmbRequests = 0; RawEventsReturned = $false } | ConvertTo-Json -Compress)
     exit 1
@@ -110,10 +122,12 @@ if ($Attempt -cne 'initial') {
     $oldIntent = Get-Content -LiteralPath (Join-Path $repo 'private/avd/profile-smb-client-metadata-intent.json') -Raw | ConvertFrom-Json -AsHashtable -DateKind String
     if ($old.result.Status -cne 'ReadOnlyClientMetadata' -or $old.result.SmbRequests -ne 0 -or $old.result.ConfigurationWrites -ne 0 -or $oldIntent.vmId -ine $vm.Id -or $oldIntent.vmInstanceId -ine $vm.VmId -or $oldIntent.sourceSha256 -cne (Get-FileHash -LiteralPath (Join-Path $repo 'private/avd/profile-smb-client-before-server-name-shape.ps1')).Hash) { throw 'ExactCompletedPreviousReadOnlyMetadataRequired' }
     if ($Attempt -ceq 'logon-audit') { $previous = Get-Content -LiteralPath (Join-Path $repo 'private/avd/profile-smb-client-metadata-server-name-shape-result.json') -Raw | ConvertFrom-Json -AsHashtable -DateKind String; if ($previous.result.Status -cne 'ReadOnlyClientMetadata' -or $previous.result.CredentialReads -ne 0 -or $previous.result.SmbRequests -ne 0) { throw 'CompletedNoCredentialMetadataPredecessorRequired' } }
+    if ($Attempt -ceq 'active-session') { $previous = Get-Content -LiteralPath (Join-Path $repo 'private/avd/profile-smb-client-metadata-logon-audit-result.json') -Raw | ConvertFrom-Json -AsHashtable -DateKind String; if ($previous.result.Status -cne 'ReadOnlyClientMetadata' -or $previous.result.LogonAudit.AuditReadSucceeded -cne $true -or $previous.result.CredentialReads -ne 0) { throw 'CompletedExactLogonMetadataRequired' } }
 }
 $metadata = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($preview.attempts.Inspect.metadataBase64)) | ConvertFrom-Json -AsHashtable
 $metadata.Nonce = [guid]::NewGuid().ToString('N')
 if ($Attempt -ceq 'logon-audit') { $metadata.LogonAudit = $true }
+if ($Attempt -ceq 'active-session') { $metadata.ActiveSession = $true }
 $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $metadata -Compress)))
 $source = Get-LeafProfileSmbClientSource
 $record = @{ schemaVersion = 1; owner = 'identity.profile-smb-client.metadata'; vmId = $vm.Id; vmInstanceId = $vm.VmId; nonce = $metadata.Nonce; sourceSha256 = (Get-FileHash -LiteralPath $PSCommandPath).Hash; previewSha256 = (Get-FileHash -LiteralPath $previewPath).Hash; guestSourceSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($source))); status = 'ReadOnlyIntentDoNotReplay'; credentialReads = 0; configurationWrites = 0 }
@@ -128,4 +142,4 @@ if ($markers.Count -ne 1) { throw 'OneClientMetadataMarkerRequired' }
 $result = ConvertFrom-Json -InputObject $markers[0].Groups['json'].Value -AsHashtable -Depth 8 -DateKind String
 if ($result.Status -cne 'ReadOnlyClientMetadata' -or $result.Nonce -cne $metadata.Nonce -or $result.ExactMemberSystemVerified -cne $true -or $result.RawEventsReturned -cne $false -or $result.ConfigurationWrites -ne 0 -or $result.CredentialReads -ne 0 -or $result.SmbRequests -ne 0) { throw 'ExactFixedClientMetadataContractRequired' }
 [IO.File]::WriteAllText($resultPath, (ConvertTo-Json -InputObject @{ owner = $record.owner; intentSha256 = (Get-FileHash -LiteralPath $intentPath).Hash; result = $result } -Depth 8 -Compress), [Text.UTF8Encoding]::new($false))
-[pscustomobject]@{ Status = 'ReadOnlyMemberSmbMetadataVerified'; Channels = $result.Channels; LogonAudit = $result.LogonAudit; RequireSecuritySignature = $result.RequireSecuritySignature; EnableSecuritySignature = $result.EnableSecuritySignature; EnableInsecureGuestLogons = $result.EnableInsecureGuestLogons; ConfigChanges = 0; CredentialReads = 0; SmbRequests = 0; RawEventsReturned = $false }
+[pscustomobject]@{ Status = 'ReadOnlyMemberSmbMetadataVerified'; Channels = $result.Channels; LogonAudit = $result.LogonAudit; ActiveSession = $result.ActiveSession; RequireSecuritySignature = $result.RequireSecuritySignature; EnableSecuritySignature = $result.EnableSecuritySignature; EnableInsecureGuestLogons = $result.EnableInsecureGuestLogons; ConfigChanges = 0; CredentialReads = 0; SmbRequests = 0; RawEventsReturned = $false }
