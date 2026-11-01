@@ -127,6 +127,17 @@ The local adapters use [ProfileNetbiosApi.ps1](ProfileNetbiosApi.ps1) and an alr
 
 NMe must have working Azure Runbooks and its policy-eligible management dependencies. Expired/nonrenewable governance windows, authentication failures and DLP prohibitions remain blockers; operator consent does not reset them. This implements metadata correction, not SMB/NTFS isolation, user-profile persistence, data recovery or clean-tenant acceptance.
 
+## Private SMB Logon Diagnostics
+
+[Test-ProfileSmbClient.ps1](../identity/Test-ProfileSmbClient.ps1) provides one-use, read-only metadata checks on the already running original identity member. It returns bounded SMB event/status fields and, when selected, existing logon-audit metadata filtered inside the guest to the reviewed administrator SID hash. It never returns raw logs, usernames, tickets or passwords; creates no new SMB connection or logon; and changes no client, service, ACL or ownership setting. Each successor requires its completed prior evidence and keeps old intents immutable.
+
+```powershell
+& ./identity/Test-ProfileSmbClient.ps1 -CheckOnly
+& ./identity/Test-ProfileSmbClient.ps1
+```
+
+Successful SID/group-token, DNS and TCP checks do not prove outbound Kerberos/SMB credentials. Microsoft documents that [LogonUser network-logon tokens](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-logonuserw) do not cache credentials and cannot access other protected network resources after conversion to a process token. Verify the exact account's logon type before repeating a root-ACL read. A network-capable interactive or batch session is a separate execution/credential boundary; do not compensate with broader permissions, weaker SMB security, ticket dumps, password-script arguments or another consumed `runAsUser` replay.
+
 ## Storage Authentication Compatibility
 
 The pinned vendor template creates SAS/key-based data-protection and locks-storage configuration. Private endpoints restrict network access; they do not replace that authentication. If effective governance sets storage `allowSharedKeyAccess=false`, the application can return HTTP 500 with `KeyBasedAuthenticationNotPermitted` even when every private endpoint is approved. `-Verify` reports the actual storage setting; inspect minimized application-exception evidence privately rather than opening backends or repeatedly redeploying.
