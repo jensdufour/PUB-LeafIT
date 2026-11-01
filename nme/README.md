@@ -93,6 +93,27 @@ Actual link values are written only to ignored `private/identity/nme/linking.jso
 
 This prepares linkable network/directory infrastructure, not a completed NMe link or an end-to-end domain-joined desktop test. NMe remains the owner of its linked-network/directory configuration; existing AD/DC/network definitions retain their current owner. AD-to-Entra synchronization is unchanged and remains a separate prerequisite for workloads that require hybrid users. The three hybrid product tracks are not made equivalent by this shared preparation. The weekday DC operating window still applies.
 
+## Profile AD Metadata Repair
+
+[Repair-ProfileNetbios.ps1](Repair-ProfileNetbios.ps1) is a preview-first NMe Azure Runbook that corrects only the existing Azure Files AD NetBIOS metadata. It preserves the DC/domain name, storage computer identity, default share permission, account/share settings and role baseline. It never rejoins the account, retrieves storage keys/SAS, or changes ACLs, ownership, networking, capacity or schedules. The runbook consumes NMe's inherited inputs and authentication; it does not sign in.
+
+The local adapters use [ProfileNetbiosApi.ps1](ProfileNetbiosApi.ps1) and an already configured, source/target-verified certificate REST client. Keep the client ID/thumbprint in `TARGET_NME_API_CLIENT_ID` and `TARGET_NME_API_CERTIFICATE_THUMBPRINT`, with reviewed existing-client metadata in ignored `private/nme/rest-api-client.json`. They do not create a client, grant permissions or bootstrap a new tenant.
+
+```powershell
+& ./nme/ProfileNetbiosApi.ps1 -CheckOnly
+& ./nme/Repair-ProfileNetbios.ps1 -CheckOnly
+& ./nme/Register-ProfileNetbiosRepair.ps1 -CheckOnly
+& ./nme/Invoke-ProfileNetbiosRepair.ps1 -CheckOnly
+& ./nme/Read-ProfileNetbiosResult.ps1 -CheckOnly
+```
+
+1. Use [Register-ProfileNetbiosRepair.ps1](Register-ProfileNetbiosRepair.ps1) for a local unassigned-definition preview, then explicit `-Register -OperatorApproved`. Independently verify the registered source and terminal registration job before execution. Fresh previews do not require a prior failed-save record; recovery modes require their exact immutable history.
+2. Bind fresh private DC/domain/storage-computer SID and CIFS-SPN proof plus the exact one-field metadata proposal. Preserve all original evidence. [Invoke-ProfileNetbiosRepair.ps1](Invoke-ProfileNetbiosRepair.ps1) `-Mode Prepare` records only the reviewed runtime bindings locally.
+3. Run one explicit `-Mode Preview -OperatorApproved`, then use `-Mode Readback` and [Read-ProfileNetbiosResult.ps1](Read-ProfileNetbiosResult.ps1) to verify the existing job and its input-digest-matched fixed result. Raw task output stays inside Azure through the existing private worker transport.
+4. Only an accepted Preview can authorize `-Mode Apply -OperatorApproved`. Verify the sole field change and complete preserved baseline independently; check a no-change repeat separately. Pending or uncertain submissions never replay. A source update is a separate pre-execution operation, not permission to run altered code.
+
+NMe must have working Azure Runbooks and its policy-eligible management dependencies. Expired/nonrenewable governance windows, authentication failures and DLP prohibitions remain blockers; operator consent does not reset them. This implements metadata correction, not SMB/NTFS isolation, user-profile persistence, data recovery or clean-tenant acceptance.
+
 ## Storage Authentication Compatibility
 
 The pinned vendor template creates SAS/key-based data-protection and locks-storage configuration. Private endpoints restrict network access; they do not replace that authentication. If effective governance sets storage `allowSharedKeyAccess=false`, the application can return HTTP 500 with `KeyBasedAuthenticationNotPermitted` even when every private endpoint is approved. `-Verify` reports the actual storage setting; inspect minimized application-exception evidence privately rather than opening backends or repeatedly redeploying.

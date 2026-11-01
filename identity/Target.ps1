@@ -104,7 +104,7 @@ function Invoke-LeafTargetGraph {
         Method = $Method
         Uri = 'https://graph.microsoft.com' + $Path
         OutputType = 'PSObject'
-        Headers = @{ 'Accept-Language' = '0' }
+        Headers = @{ 'Accept-Language' = 'en-US' }
         ErrorAction = 'Stop'
     }
     if ($Body) { $parameters.Body = $Body | ConvertTo-Json -Depth 20 -Compress; $parameters.ContentType = 'application/json' }
