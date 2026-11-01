@@ -129,6 +129,13 @@ NMe must have working Azure Runbooks and its policy-eligible management dependen
 
 ## Private SMB Logon Diagnostics
 
+[Test-ExistingWindowsAccess.ps1](../identity/Test-ExistingWindowsAccess.ps1) reads the exact original member, private NIC/subnet, reviewed Bastion source/port rules and their priority relative to the management deny. It makes no rule, journal, guest, credential or sign-in change. A saved Open receipt is not proof that its live rules remain present; inspect current state before a native Windows connection, preserve unrelated concurrent changes, and close temporary access if direct authentication cannot be completed.
+
+```powershell
+& ./identity/Test-ExistingWindowsAccess.ps1 -CheckOnly
+& ./identity/Test-ExistingWindowsAccess.ps1
+```
+
 [Test-ProfileSmbClient.ps1](../identity/Test-ProfileSmbClient.ps1) provides one-use, read-only metadata checks on the already running original identity member. It returns bounded SMB event/status fields and, when selected, existing logon-audit metadata filtered inside the guest to the reviewed administrator SID hash. It never returns raw logs, usernames, tickets or passwords; creates no new SMB connection or logon; and changes no client, service, ACL or ownership setting. Each successor requires its completed prior evidence and keeps old intents immutable.
 
 ```powershell
