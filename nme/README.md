@@ -120,6 +120,8 @@ The pinned vendor template creates SAS/key-based data-protection and locks-stora
 
 The reviewed vendor hardening references do not establish a keyless replacement for this path. Do not invent application settings, rewrite vendor secrets, or weaken policy as an automatic fix. An exception and authentication-setting change require explicit approval, documented scope/expiry, versioned automation, fresh verification, and no automatic renewal. Without approval or a verified supported keyless path, leave the control intact and mark initialization/Install ID retrieval blocked, not completed. NMe Azure resources can incur charges while application setup is blocked.
 
+Where the reviewed governance record explicitly permits brief reapplication before daily removal, `-BriefReapplication` provides one separately approved, DataProtection-only repair. It requires the original inputs, preserves the original approval/expiry, journals intent before the tag and one-property management update, and blocks another nonconverged reapplication. It does not grant a new full window, configure recurring retagging, retrieve keys/SAS, add cost exclusions, or include profile storage. Preview first, add `-Apply` only for the approved repair, and verify a zero-write `NoChange` repeat. Unknown submissions remain blocked.
+
 [Set-StorageCompatibility.ps1](Set-StorageCompatibility.ps1) implements that separately approved, storage-only compatibility change:
 
 ```powershell

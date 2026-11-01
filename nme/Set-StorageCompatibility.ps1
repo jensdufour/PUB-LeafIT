@@ -1,6 +1,6 @@
 #requires -Version 7.6
 [CmdletBinding()]
-param([switch]$CheckOnly, [switch]$Apply)
+param([switch]$CheckOnly, [switch]$Apply, [switch]$BriefReapplication)
 
 $ErrorActionPreference = 'Stop'
 if ($CheckOnly -and $Apply) { throw 'Offline checks cannot apply a storage exception.' }
@@ -13,12 +13,17 @@ function Assert-NmePrivateStorage($Storage, [string]$GroupId) {
     if ($Storage.Properties.publicNetworkAccess -ne 'Disabled' -or $Storage.Properties.allowBlobPublicAccess -ne $false -or $Storage.Properties.supportsHttpsTrafficOnly -ne $true) { throw 'NMe storage must remain private, HTTPS-only, and unavailable to anonymous blob access.' }
 }
 
-function Assert-NmeExceptionWindow([string]$Approved, [string]$Expires, [int]$MaximumDays) {
+function Assert-NmeExceptionWindow([string]$Approved, [string]$Expires, [int]$MaximumDays, [bool]$PermitElapsedOriginalWindow = $false) {
     try {
         $approvedAt = [datetimeoffset]::Parse($Approved, [Globalization.CultureInfo]::InvariantCulture)
         $expiresAt = [datetimeoffset]::Parse($Expires, [Globalization.CultureInfo]::InvariantCulture)
     } catch { throw 'The private exception timestamps are invalid.' }
-    if ($MaximumDays -lt 1 -or $approvedAt.Offset -ne [timespan]::Zero -or $expiresAt.Offset -ne [timespan]::Zero -or $approvedAt -gt [datetimeoffset]::UtcNow -or $expiresAt -le [datetimeoffset]::UtcNow -or $expiresAt -le $approvedAt -or $expiresAt -gt $approvedAt.AddDays($MaximumDays)) { throw 'The private exception is expired, future-dated, or exceeds its documented window. Automatic renewal is prohibited.' }
+    if ($MaximumDays -lt 1 -or $approvedAt.Offset -ne [timespan]::Zero -or $expiresAt.Offset -ne [timespan]::Zero -or $approvedAt -gt [datetimeoffset]::UtcNow -or (-not $PermitElapsedOriginalWindow -and $expiresAt -le [datetimeoffset]::UtcNow) -or $expiresAt -le $approvedAt -or $expiresAt -gt $approvedAt.AddDays($MaximumDays)) { throw 'The private exception is expired, future-dated, or exceeds its documented window. Automatic renewal is prohibited.' }
+}
+
+function Assert-NmeBriefReapplication {
+    param([bool]$NewInputs, $Validity)
+    if ($NewInputs -or $Validity.reapplicationResetsFullWindow -cne $false -or $Validity.fullWindowsPerTrackedResourceOrGroup -ne 1 -or $Validity.reapplicationCaveat -isnot [string] -or $Validity.reapplicationCaveat.IndexOf('brief reapplication before daily removal', [StringComparison]::OrdinalIgnoreCase) -lt 0 -or $Validity.reapplicationCaveat.IndexOf('not a new full exemption period', [StringComparison]::OrdinalIgnoreCase) -lt 0) { throw 'DocumentedOneOffOriginalResourceReapplicationRequired' }
 }
 
 if ($CheckOnly) {
@@ -44,6 +49,13 @@ if ($CheckOnly) {
         try { Assert-NmeExceptionWindow $now.AddMinutes(-2).ToString('o') $expires.ToString('o') 1 } catch { $rejected = $true }
         if (-not $rejected) { throw 'An expired or overlong exception was accepted.' }
     }
+    Assert-NmeExceptionWindow $now.AddDays(-2).ToString('o') $now.AddDays(-1).ToString('o') 1 $true
+    $validity = @{ reapplicationResetsFullWindow = $false; fullWindowsPerTrackedResourceOrGroup = 1; reapplicationCaveat = 'brief reapplication before daily removal, not a new full exemption period' }
+    Assert-NmeBriefReapplication $false $validity
+    foreach ($case in @(@{ newInputs = $true; validity = $validity }, @{ newInputs = $false; validity = @{ reapplicationResetsFullWindow = $true; fullWindowsPerTrackedResourceOrGroup = 1; reapplicationCaveat = $validity.reapplicationCaveat } })) {
+        $rejected = $false; try { Assert-NmeBriefReapplication $case.newInputs $case.validity } catch { $rejected = $true }
+        if (-not $rejected) { throw 'NewWindowOrRenewalBriefFixtureAccepted' }
+    }
     [pscustomobject]@{ OfflineChecksPassed = $true; StorageOnlyScopeChecked = $true; PrivateAccessGuardsPassed = $true; ExpiryGuardsPassed = $true; AzureCallsMade = $false }
     return
 }
@@ -51,7 +63,6 @@ if ($CheckOnly) {
 $settings = Read-LeafPrivateTarget $repo
 Import-Module Az.Accounts -MinimumVersion 5.3.3 -ErrorAction Stop
 Import-Module Az.Resources -ErrorAction Stop
-Import-Module Az.Storage -ErrorAction Stop
 $context = Get-AzContext
 Assert-LeafTargetContext $settings $context
 $desired = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'desired.json') -Raw | ConvertFrom-Json -AsHashtable
@@ -60,7 +71,7 @@ $guide = Get-Content -LiteralPath (Join-Path $repo 'private/nme-governance.json'
 if ($plan.deploymentSucceeded -ne $true -or $plan.vendorTemplateSha256 -ne $desired.installation.templateSha256 -or $plan.resourceGroupName -notmatch '^rg-nme-swc-[0-9]{1,3}$') { throw 'The installed vendor package or dedicated workload group is unverified.' }
 if ($guide.scope.individualResourceSupported -ne $true -or $guide.validity.reapplicationResetsFullWindow -ne $false -or $guide.validity.fullWindowsPerTrackedResourceOrGroup -ne 1 -or [int]$guide.validity.fullWindowDays -lt 1) { throw 'The stored guidance does not establish the selected finite, resource-only exception.' }
 $groupId = '/subscriptions/' + $settings.TARGET_SUBSCRIPTION_ID + '/resourceGroups/' + $plan.resourceGroupName
-$accounts = @(Get-AzResource -ResourceGroupName $plan.resourceGroupName -ResourceType 'Microsoft.Storage/storageAccounts' -ExpandProperties -DefaultProfile $context)
+$accounts = @(Get-AzResource -ResourceGroupName $plan.resourceGroupName -ResourceType 'Microsoft.Storage/storageAccounts' -ExpandProperties -DefaultProfile $context | Where-Object { $_.Name -cmatch '^dps[a-z0-9]{13}$' })
 if ($accounts.Count -ne 1) { throw 'The NMe data-protection account is missing or ambiguous.' }
 $storage = $accounts[0]
 Assert-NmePrivateStorage $storage $groupId
@@ -91,15 +102,28 @@ if ($inputs.Count -ne $names.Count -or $inputs.TARGET_NME_STORAGE_EXCEPTION_TAG_
 foreach ($name in $names) {
     if ([string]::IsNullOrWhiteSpace($inputs[$name]) -or $inputs[$name] -match '[\r\n"''=]') { throw 'A private exception input cannot be safely recorded as dotenv data.' }
 }
-Assert-NmeExceptionWindow $inputs.TARGET_NME_STORAGE_EXCEPTION_APPROVED_UTC $inputs.TARGET_NME_STORAGE_EXCEPTION_EXPIRES_UTC ([int]$guide.validity.fullWindowDays)
+if ($BriefReapplication) { Assert-NmeBriefReapplication $newInputs $guide.validity }
+Assert-NmeExceptionWindow $inputs.TARGET_NME_STORAGE_EXCEPTION_APPROVED_UTC $inputs.TARGET_NME_STORAGE_EXCEPTION_EXPIRES_UTC ([int]$guide.validity.fullWindowDays) $BriefReapplication.IsPresent
 $tagName = $inputs.TARGET_NME_STORAGE_EXCEPTION_TAG_NAME
 $tagValue = $inputs.TARGET_NME_STORAGE_EXCEPTION_TAG_VALUE
 if ($beforeTags.ContainsKey($tagName) -and $beforeTags[$tagName] -cne $tagValue) { throw 'The existing storage security tag conflicts with the reviewed exception.' }
 if (-not $Apply) {
-    [pscustomobject]@{ Mode = 'Preview'; ResourceOnlyScope = $true; PrivateNetworkingPreserved = $true; ExceptionTagRequired = -not $beforeTags.ContainsKey($tagName); SharedKeyChangeRequired = $storage.Properties.allowSharedKeyAccess -ne $true; ExistingExpiryPreserved = -not $newInputs; AzureChangesMade = $false }
+    [pscustomobject]@{ Mode = 'Preview'; BriefOneOffReapplication = $BriefReapplication.IsPresent; ResourceOnlyScope = $true; PrivateNetworkingPreserved = $true; ExceptionTagRequired = -not $beforeTags.ContainsKey($tagName); SharedKeyChangeRequired = $storage.Properties.allowSharedKeyAccess -ne $true; ExistingExpiryPreserved = -not $newInputs; AzureChangesMade = $false }
     return
 }
 
+$git = (Get-Command git.exe -CommandType Application -ErrorAction Stop).Source
+foreach ($path in @('.env', 'private/nme/dataprotection-brief-reapplication-intent.json')) { & $git -C $repo check-ignore --quiet -- $path; if ($LASTEXITCODE -ne 0) { throw 'IgnoredPrivateCompatibilityInputsRequired' } }
+$tracked = @(& $git -C $repo ls-files -- .env private)
+if ($LASTEXITCODE -ne 0 -or $tracked.Count) { throw 'PrivateCompatibilityInputsMustRemainUntracked' }
+$briefIntentPath = Join-Path $repo 'private/nme/dataprotection-brief-reapplication-intent.json'
+if ($BriefReapplication -and (-not $beforeTags.ContainsKey($tagName) -or $storage.Properties.allowSharedKeyAccess -ne $true)) {
+    if (Test-Path -LiteralPath $briefIntentPath) { throw 'BriefReapplicationAlreadyConsumedOrPendingDoNotRepeat' }
+    $state = @{ schemaVersion = 1; owner = 'nme.dataprotection.brief-reapplication'; resourceId = $storage.ResourceId; sourceSha256 = (Get-FileHash -LiteralPath $PSCommandPath).Hash; governanceSha256 = (Get-FileHash -LiteralPath (Join-Path $repo 'private/nme-governance.json')).Hash; originalApprovedUtc = $inputs.TARGET_NME_STORAGE_EXCEPTION_APPROVED_UTC; originalExpiresUtc = $inputs.TARGET_NME_STORAGE_EXCEPTION_EXPIRES_UTC; createdUtc = [datetimeoffset]::UtcNow.ToString('o'); oneOffOnly = $true; windowReset = $false; status = 'WriteIntentDoNotReplay'; credentialRequests = 0 }
+    $bytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $state -Depth 5 -Compress -WarningAction Stop))
+    $stream = [IO.File]::Open($briefIntentPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+}
 if ($newInputs) {
     $lines = @('') + @($names | ForEach-Object { $_ + '=' + $inputs[$_] })
     [IO.File]::AppendAllText((Join-Path $repo '.env'), ([string]::Join([Environment]::NewLine, $lines) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
@@ -118,10 +142,12 @@ foreach ($key in $beforeTags.Keys) {
 }
 if ($tagReadback.Properties.allowSharedKeyAccess -ne $true) {
     Assert-LeafTargetContext $settings (Get-AzContext)
-    $null = Set-AzStorageAccount -ResourceGroupName $plan.resourceGroupName -Name $storage.Name -AllowSharedKeyAccess $true -DefaultProfile $context
+    $payload = @{ properties = @{ allowSharedKeyAccess = $true } } | ConvertTo-Json -Depth 3 -Compress
+    try { $response = Invoke-AzRestMethod -Method PATCH -Path ($storage.ResourceId + '?api-version=2025-01-01') -Payload $payload -DefaultProfile $context -ErrorAction Stop } catch { throw 'StorageCompatibilityPatchStoppedInspectBeforeRetry' }
+    if ($response.StatusCode -ne 200) { throw 'StorageCompatibilityPatchReadbackRequiredBeforeRetry' }
     $changed = $true
 }
 $after = Get-AzResource -ResourceId $storage.ResourceId -ExpandProperties -DefaultProfile $context
 Assert-NmePrivateStorage $after $groupId
 if ($after.Properties.allowSharedKeyAccess -ne $true -or $after.Tags[$tagName] -cne $tagValue) { throw 'The approved storage authentication compatibility change did not persist.' }
-[pscustomobject]@{ Mode = if ($changed) { 'Applied' } else { 'NoChange' }; StorageOnlyScope = $true; PrivateNetworkingPreserved = $true; SharedKeyAccessVerified = $true; OriginalExpiryPreserved = $true; AutomaticRenewalEnabled = $false; AzureChangesMade = $changed }
+[pscustomobject]@{ Mode = if ($changed) { 'Applied' } else { 'NoChange' }; BriefOneOffReapplication = $BriefReapplication.IsPresent; StorageOnlyScope = $true; PrivateNetworkingPreserved = $true; SharedKeyAccessVerified = $true; OriginalExpiryPreserved = $true; AutomaticRenewalEnabled = $false; StorageCredentialsRetrieved = $false; AzureChangesMade = $changed }
