@@ -93,6 +93,19 @@ Actual link values are written only to ignored `private/identity/nme/linking.jso
 
 This prepares linkable network/directory infrastructure, not a completed NMe link or an end-to-end domain-joined desktop test. NMe remains the owner of its linked-network/directory configuration; existing AD/DC/network definitions retain their current owner. AD-to-Entra synchronization is unchanged and remains a separate prerequisite for workloads that require hybrid users. The three hybrid product tracks are not made equivalent by this shared preparation. The weekday DC operating window still applies.
 
+## App Service Restart
+
+[Restart-AppService.ps1](Restart-AppService.ps1) restarts only the exact installed NMe App Service in the retained, verified target context. Preview is read-only; restart requires `-OperatorApproved` and records an immutable attempt before the native request. It never changes app settings, tags, hosting, networking, slots or job inputs, and does not resubmit NMe jobs.
+
+```powershell
+& ./nme/Restart-AppService.ps1 -CheckOnly
+& ./nme/Restart-AppService.ps1 -Mode Preview
+& ./nme/Restart-AppService.ps1 -Mode Restart -OperatorApproved
+& ./nme/Restart-AppService.ps1 -Mode Verify
+```
+
+`Verify` checks the original source/target bindings and normal-TLS HTTPS response headers without returning credentials or response bodies. A successful response or expected Microsoft sign-in redirect proves the portal responds, not that the user is authenticated or every background job succeeded. Temporary startup responses remain pending; repeat verification, not the restart. A later separately approved restart requires a distinct `-AttemptId`; do not use that to bypass an unresolved earlier attempt.
+
 ## Profile AD Metadata Repair
 
 [Repair-ProfileNetbios.ps1](Repair-ProfileNetbios.ps1) is a preview-first NMe Azure Runbook that corrects only the existing Azure Files AD NetBIOS metadata. It preserves the DC/domain name, storage computer identity, default share permission, account/share settings and role baseline. It never rejoins the account, retrieves storage keys/SAS, or changes ACLs, ownership, networking, capacity or schedules. The runbook consumes NMe's inherited inputs and authentication; it does not sign in.
