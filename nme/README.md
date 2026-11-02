@@ -145,6 +145,14 @@ NMe must have working Azure Runbooks and its policy-eligible management dependen
 
 Successful SID/group-token, DNS and TCP checks do not prove outbound Kerberos/SMB credentials. Microsoft documents that [LogonUser network-logon tokens](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-logonuserw) do not cache credentials and cannot access other protected network resources after conversion to a process token. Verify the exact account's logon type before repeating a root-ACL read. A network-capable interactive or batch session is a separate execution/credential boundary; do not compensate with broader permissions, weaker SMB security, ticket dumps, password-script arguments or another consumed `runAsUser` replay.
 
+To import a known existing administrator password locally, run the following in PowerShell 7.6 on Windows. Enter the configured AD administrator's short username and password directly into its masked terminal prompts, never in chat or command arguments:
+
+```powershell
+& ./identity/Initialize-PrivateInputs.ps1 -ImportVmAdministrator -Apply
+```
+
+The initializer protects the password with current-user Windows DPAPI in ignored `.env`; it does not persist plaintext, print credentials, retarget another account, or change any AD/Azure password. The existing minimum 16-character input contract still applies. Unchanged credentials preserve the original ciphertext and file bytes. A changed local password field invalidates source-bound input fingerprints, so revalidate dependent plans before using it. Protected inputs are usable only in the same Windows-user/device context; they are not portable secrets or a remote sign-in by themselves.
+
 ## Storage Authentication Compatibility
 
 The pinned vendor template creates SAS/key-based data-protection and locks-storage configuration. Private endpoints restrict network access; they do not replace that authentication. If effective governance sets storage `allowSharedKeyAccess=false`, the application can return HTTP 500 with `KeyBasedAuthenticationNotPermitted` even when every private endpoint is approved. `-Verify` reports the actual storage setting; inspect minimized application-exception evidence privately rather than opening backends or repeatedly redeploying.
