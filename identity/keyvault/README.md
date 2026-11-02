@@ -32,16 +32,27 @@ Run from the repository root in the retained authenticated target PowerShell pro
 & ./identity/Deploy-CredentialVault.ps1 -Mode Apply
 ```
 
-The reviewed state is Standard Key Vault, Entra RBAC, purge protection, 90-day soft-delete retention, and a public endpoint restricted by a default-deny firewall to one exact operator IPv4 `/32`, with no trusted-service bypass. Key Vault Secrets Officer is assigned only to the configured user at this new vault's scope so that user can maintain credentials. No managed identity or Nerdio application receives access.
+The reviewed state is Standard Key Vault, Entra RBAC, purge protection, 90-day soft-delete retention, and disabled public network access, with a default-deny firewall and no trusted-service bypass. The retained operator IPv4 `/32` rule does not enable public access while public networking is disabled. Key Vault Secrets Officer is assigned only to the configured user at this new vault's scope so that user can maintain credentials. No managed identity or Nerdio application receives access.
 
 Preview permits only the new vault and its exact scoped role assignment. Unrelated existing resources marked `Ignore` by ARM are not mutations. Apply requires a fresh matching preview, unchanged target/inputs/source, and the same in-memory compiled template used for its repeated what-if. An existing vault without matching creation evidence cannot be adopted. Existing-vault drift is never automatically corrected. Evidence remains under ignored `private/identity/keyvault/`.
 
-Successful deployment is not acceptance: readback must confirm every owned security property and the exact User role assignment, and repeated Apply must return `NoChange`. ARM may omit `principalType` from what-if; creation still explicitly sets `User` and actual-state verification requires it.
+Successful deployment is not acceptance: readback must confirm every owned security property and the exact User role assignment, and repeated Apply must return `NoChange`. ARM may omit `principalType` from what-if; creation still explicitly sets `User` and actual-state verification requires it. This is management-plane acceptance only: `DataPlaneAccessVerified` remains false and does not establish a working password picker, secret retrieval or Bastion session.
+
+For an already created vault with an older public-intent record, explicitly reviewed private tightening can use this read-only reconciliation:
+
+```powershell
+& ./identity/Deploy-CredentialVault.ps1 -Mode Verify -ReconcilePrivateIntent
+& ./identity/Deploy-CredentialVault.ps1 -Mode Apply
+```
+
+Reconciliation permits only the single source change from public access `Enabled` to `Disabled`, an exact already applied source/target/input/vault binding, and fresh complete private-vault/role readback. It writes a separate `private-intent-plan.json`, binds the original creation record's byte hash and leaves that original unchanged. Unrelated source, identity, permission or network changes cannot be adopted through this mode. It performs no Azure mutation and never silently accepts arbitrary drift.
 
 ## Network And Credential Gates
 
-If an effective setting differs, including public access being disabled, stop. Do not retry deployment to defeat policy, add a blanket trusted-service bypass, widen firewall ranges, change Nerdio's vault or upgrade Bastion implicitly. Establish the cause and an approved network path or separately reviewed exception first. A private endpoint alone does not give the operator's browser private connectivity.
+If an effective setting differs from reviewed intent, stop. Do not retry deployment to defeat policy, add a blanket trusted-service bypass, widen firewall ranges, change Nerdio's vault or upgrade Bastion implicitly. Establish the cause before choosing a supported path. If private access is required, align the definition through the explicit one-field reconciliation above rather than repeatedly requesting a public endpoint.
 
-The [Key Vault firewall applies to the portal and its resource pickers](https://learn.microsoft.com/en-us/azure/key-vault/general/network-security); changing client networks requires a reviewed access update. [Trusted services](https://learn.microsoft.com/en-us/azure/key-vault/general/overview-vnet-service-endpoints#trusted-services) is not a blanket exception for every Azure service. The browser-visible Bastion option does not itself prove the selected SKU's end-to-end network/credential behavior; verify that workflow separately without silently upgrading it.
+An approved [private endpoint and private DNS](https://learn.microsoft.com/en-us/azure/key-vault/general/private-link-service) must be reachable from the machine performing the vault data-plane operation. Adding an endpoint in the VM's VNet does not itself provide the operator's browser with a route. Do not provision an unusable endpoint, helper VM, VPN or paid Bastion tier merely to satisfy management-plane checks; review the actual client path first.
+
+The [Key Vault firewall applies to the portal and its resource pickers](https://learn.microsoft.com/en-us/azure/key-vault/general/network-security). Seeing the vault through ARM does not prove access to its secrets. [Trusted services](https://learn.microsoft.com/en-us/azure/key-vault/general/overview-vnet-service-endpoints#trusted-services) is not a blanket exception for every Azure service. The browser-visible Bastion option does not itself prove the selected SKU's end-to-end network/credential behavior; verify that workflow separately without silently upgrading it.
 
 This command neither stores nor retrieves a password. After network and repeat-apply acceptance, enter the existing VM password directly in the Azure portal as one standalone secret for Bastion's **Password from Azure Key Vault** option, and enter the username separately. Never place credential values in template parameters, command lines, screenshots, logs or plaintext configuration. Do not change the configured AD administrator, reset a password or assume a local VM credential is the domain administrator. Credential validity and rotation remain separate from secret storage. Storage keys, arbitrary SAS and webhook tokens remain prohibited by device policy.

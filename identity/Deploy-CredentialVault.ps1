@@ -2,10 +2,12 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Preview', 'Apply', 'Verify')][string]$Mode = 'Preview',
+    [switch]$ReconcilePrivateIntent,
     [switch]$CheckOnly
 )
 
 $ErrorActionPreference = 'Stop'
+if ($ReconcilePrivateIntent -and ($CheckOnly -or $Mode -cne 'Verify')) { throw 'PrivateIntentReconciliationIsReadOnlyVerifyOnly' }
 $repo = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'Target.ps1')
 $template = Join-Path $PSScriptRoot 'keyvault/resources.bicep'
@@ -39,11 +41,27 @@ function Get-LeafCredentialVaultHash {
     return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Text)))
 }
 
+function New-LeafPrivateCredentialVaultPlan {
+    param($OriginalPlan, [string]$SourceText, [string]$SourceHash, [string]$InputHash, [string]$TargetHash, [string]$VaultId, [string]$OriginalPlanHash)
+    $privateSetting = "publicNetworkAccess: 'Disabled'"
+    if ([regex]::Matches($SourceText, [regex]::Escape($privateSetting)).Count -ne 1 -or (Get-LeafCredentialVaultHash $SourceText) -cne $SourceHash) { throw 'ExactPrivateOnlySourceRequired' }
+    $originalSource = $SourceText.Replace($privateSetting, "publicNetworkAccess: 'Enabled'")
+    if (-not $OriginalPlan -or $OriginalPlan.status -cnotin @('AppliedAwaitingVerification', 'Verified') -or $OriginalPlan.sourceHash -cne (Get-LeafCredentialVaultHash $originalSource) -or $OriginalPlan.inputHash -cne $InputHash -or $OriginalPlan.targetHash -cne $TargetHash -or $OriginalPlan.vaultId -ine $VaultId) { throw 'OnlyExactAppliedPublicIntentMayBeTightened' }
+    $copy = $OriginalPlan | ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable -Depth 30 -DateKind String
+    $copy.sourceHash = $SourceHash
+    $copy.status = 'AppliedAwaitingVerification'
+    $copy['publicIntentSourceHash'] = $OriginalPlan.sourceHash
+    $copy['publicIntentPlanHash'] = $OriginalPlanHash
+    $copy['networkIntent'] = 'Private'
+    $copy['reconciledUtc'] = [DateTimeOffset]::UtcNow.ToString('o')
+    return $copy
+}
+
 function Test-LeafCredentialVaultProperties {
     param($Vault, $Inputs, [string]$TenantId)
     $properties = $Vault.properties
     $rules = @($properties.networkAcls.ipRules | Where-Object { $null -ne $_ })
-    return $Vault.location -ceq 'swedencentral' -and $Vault.tags['managed-by'] -ceq 'bicep' -and $Vault.tags.workload -ceq 'identity' -and $properties.provisioningState -ceq 'Succeeded' -and $properties.tenantId -ieq $TenantId -and $properties.sku.name -ieq 'standard' -and $properties.enableRbacAuthorization -ceq $true -and $properties.enableSoftDelete -ceq $true -and $properties.enablePurgeProtection -ceq $true -and $properties.softDeleteRetentionInDays -eq 90 -and -not $properties.enabledForDeployment -and -not $properties.enabledForDiskEncryption -and -not $properties.enabledForTemplateDeployment -and $properties.publicNetworkAccess -ceq 'Enabled' -and $properties.networkAcls.defaultAction -ceq 'Deny' -and $properties.networkAcls.bypass -ceq 'None' -and $rules.Count -eq 1 -and $rules[0].value -cin @($Inputs.TARGET_IDENTITY_KEY_VAULT_CLIENT_IPV4, ($Inputs.TARGET_IDENTITY_KEY_VAULT_CLIENT_IPV4 + '/32')) -and @($properties.networkAcls.virtualNetworkRules | Where-Object { $null -ne $_ }).Count -eq 0 -and @($properties.accessPolicies | Where-Object { $null -ne $_ }).Count -eq 0
+    return $Vault.location -ceq 'swedencentral' -and $Vault.tags['managed-by'] -ceq 'bicep' -and $Vault.tags.workload -ceq 'identity' -and $properties.provisioningState -ceq 'Succeeded' -and $properties.tenantId -ieq $TenantId -and $properties.sku.name -ieq 'standard' -and $properties.enableRbacAuthorization -ceq $true -and $properties.enableSoftDelete -ceq $true -and $properties.enablePurgeProtection -ceq $true -and $properties.softDeleteRetentionInDays -eq 90 -and -not $properties.enabledForDeployment -and -not $properties.enabledForDiskEncryption -and -not $properties.enabledForTemplateDeployment -and $properties.publicNetworkAccess -ceq 'Disabled' -and $properties.networkAcls.defaultAction -ceq 'Deny' -and $properties.networkAcls.bypass -ceq 'None' -and $rules.Count -eq 1 -and $rules[0].value -cin @($Inputs.TARGET_IDENTITY_KEY_VAULT_CLIENT_IPV4, ($Inputs.TARGET_IDENTITY_KEY_VAULT_CLIENT_IPV4 + '/32')) -and @($properties.networkAcls.virtualNetworkRules | Where-Object { $null -ne $_ }).Count -eq 0 -and @($properties.accessPolicies | Where-Object { $null -ne $_ }).Count -eq 0
 }
 
 function Get-LeafCredentialVaultChanges {
@@ -117,9 +135,9 @@ if ($CheckOnly) {
         if (-not $rejected) { throw 'ExpandedVaultDeploymentFixtureAccepted' }
         $checks++
     }
-    $vault = @{ location = 'swedencentral'; tags = @{ 'managed-by' = 'bicep'; workload = 'identity' }; properties = @{ provisioningState = 'Succeeded'; tenantId = $identifier; sku = @{ name = 'standard' }; enableRbacAuthorization = $true; enableSoftDelete = $true; enablePurgeProtection = $true; softDeleteRetentionInDays = 90; enabledForDeployment = $false; enabledForDiskEncryption = $false; enabledForTemplateDeployment = $false; publicNetworkAccess = 'Enabled'; networkAcls = @{ defaultAction = 'Deny'; bypass = 'None'; ipRules = @(@{ value = '203.0.113.8/32' }); virtualNetworkRules = @() }; accessPolicies = @() } }
+    $vault = @{ location = 'swedencentral'; tags = @{ 'managed-by' = 'bicep'; workload = 'identity' }; properties = @{ provisioningState = 'Succeeded'; tenantId = $identifier; sku = @{ name = 'standard' }; enableRbacAuthorization = $true; enableSoftDelete = $true; enablePurgeProtection = $true; softDeleteRetentionInDays = 90; enabledForDeployment = $false; enabledForDiskEncryption = $false; enabledForTemplateDeployment = $false; publicNetworkAccess = 'Disabled'; networkAcls = @{ defaultAction = 'Deny'; bypass = 'None'; ipRules = @(@{ value = '203.0.113.8/32' }); virtualNetworkRules = @() }; accessPolicies = @() } }
     if (-not (Test-LeafCredentialVaultProperties $vault $fixture $identifier)) { throw 'ExactVaultStateFixtureNotAccepted' }
-    foreach ($bad in @('Network', 'Address', 'ExtraAddress', 'Bypass', 'Rbac', 'Purge', 'Retention', 'Tenant', 'TemplateAccess', 'Owner', 'Pending')) {
+    foreach ($bad in @('Network', 'Address', 'ExtraAddress', 'Bypass', 'Rbac', 'Purge', 'Retention', 'Tenant', 'TemplateAccess', 'Owner', 'Pending', 'PublicAccess', 'OmittedAccess')) {
         $copy = $vault | ConvertTo-Json -Depth 15 | ConvertFrom-Json -AsHashtable
         switch ($bad) {
             'Network' { $copy.properties.networkAcls.defaultAction = 'Allow' }
@@ -133,6 +151,8 @@ if ($CheckOnly) {
             'TemplateAccess' { $copy.properties.enabledForTemplateDeployment = $true }
             'Owner' { $copy.tags['managed-by'] = 'another-owner' }
             'Pending' { $copy.properties.provisioningState = 'RegisteringDns' }
+            'PublicAccess' { $copy.properties.publicNetworkAccess = 'Enabled' }
+            'OmittedAccess' { $null = $copy.properties.Remove('publicNetworkAccess') }
         }
         if (Test-LeafCredentialVaultProperties $copy $fixture $identifier) { throw 'VaultSecurityDriftFixtureAccepted' }
         $checks++
@@ -151,6 +171,32 @@ if ($CheckOnly) {
     $nativeChanges = @([Microsoft.Azure.Commands.ResourceManager.Cmdlets.SdkModels.Deployments.PSWhatIfChange]::new($nativeVault), [Microsoft.Azure.Commands.ResourceManager.Cmdlets.SdkModels.Deployments.PSWhatIfChange]::new($nativeRole))
     $null = Get-LeafCredentialVaultChanges @{ Status = 'Succeeded'; Changes = $nativeChanges } $vaultId $identifier $roleId
     $checks += 2
+    $publicSource = "targetScope = 'resourceGroup'`npublicNetworkAccess: 'Enabled'`n"
+    $privateSource = $publicSource.Replace("publicNetworkAccess: 'Enabled'", "publicNetworkAccess: 'Disabled'")
+    $original = @{ status = 'AppliedAwaitingVerification'; sourceHash = Get-LeafCredentialVaultHash $publicSource; inputHash = 'SYNTHETIC-INPUT-HASH'; targetHash = 'SYNTHETIC-TARGET-HASH'; vaultId = $vaultId; roleAssignmentId = $roleChange.FullyQualifiedResourceId }
+    $reconciled = New-LeafPrivateCredentialVaultPlan $original $privateSource (Get-LeafCredentialVaultHash $privateSource) $original.inputHash $original.targetHash $vaultId 'SYNTHETIC-PARENT-HASH'
+    if ($reconciled.sourceHash -cne (Get-LeafCredentialVaultHash $privateSource) -or $reconciled.publicIntentSourceHash -cne $original.sourceHash -or $reconciled.roleAssignmentId -cne $original.roleAssignmentId -or $original.ContainsKey('networkIntent') -or $original.sourceHash -cne (Get-LeafCredentialVaultHash $publicSource)) { throw 'PrivateReconciliationMustPreserveOriginalEvidenceAndRole' }
+    $checks++
+    foreach ($bad in @('Unapplied', 'OriginalSource', 'Inputs', 'Target', 'Vault', 'OtherSourceChange', 'MissingPrivateSetting', 'DuplicatePrivateSetting', 'SameSourceApplying', 'SameSourceVerified')) {
+        $copy = $original | ConvertTo-Json -Depth 15 | ConvertFrom-Json -AsHashtable
+        $candidate = $privateSource
+        switch ($bad) {
+            'Unapplied' { $copy.status = 'Previewed' }
+            'OriginalSource' { $copy.sourceHash = 'SYNTHETIC-DIFFERENT-SOURCE' }
+            'Inputs' { $copy.inputHash = 'SYNTHETIC-DIFFERENT-INPUTS' }
+            'Target' { $copy.targetHash = 'SYNTHETIC-DIFFERENT-TARGET' }
+            'Vault' { $copy.vaultId = '/SYNTHETIC-DIFFERENT-VAULT' }
+            'OtherSourceChange' { $candidate += "sku: 'premium'`n" }
+            'MissingPrivateSetting' { $candidate = $publicSource }
+            'DuplicatePrivateSetting' { $candidate += "publicNetworkAccess: 'Disabled'`n" }
+            'SameSourceApplying' { $copy.status = 'Applying'; $copy.sourceHash = Get-LeafCredentialVaultHash $privateSource }
+            'SameSourceVerified' { $copy.status = 'Verified'; $copy.sourceHash = Get-LeafCredentialVaultHash $privateSource }
+        }
+        $rejected = $false
+        try { $null = New-LeafPrivateCredentialVaultPlan $copy $candidate (Get-LeafCredentialVaultHash $candidate) $original.inputHash $original.targetHash $vaultId 'SYNTHETIC-PARENT-HASH' } catch { $rejected = $true }
+        if (-not $rejected) { throw 'UnboundPrivateIntentReconciliationFixtureAccepted' }
+        $checks++
+    }
     [pscustomobject]@{ Status = 'CredentialVaultOfflineChecksPassed'; Checks = $checks; CloudRequests = 0; SecretValuesRequested = $false }
     return
 }
@@ -168,7 +214,9 @@ $parameters = @{ vaultName = $inputs.TARGET_IDENTITY_KEY_VAULT_NAME; location = 
 $vaultId = $groupId + '/providers/Microsoft.KeyVault/vaults/' + $parameters.vaultName
 $roleId = '/subscriptions/' + $settings.TARGET_SUBSCRIPTION_ID + '/providers/Microsoft.Authorization/roleDefinitions/' + $officerRole
 $folder = Join-Path $repo 'private/identity/keyvault'
-$planPath = Join-Path $folder 'plan.json'
+$publicPlanPath = Join-Path $folder 'plan.json'
+$privatePlanPath = Join-Path $folder 'private-intent-plan.json'
+$planPath = if (Test-Path -LiteralPath $privatePlanPath) { $privatePlanPath } else { $publicPlanPath }
 $sourceHash = (Get-FileHash -LiteralPath $template -Algorithm SHA256).Hash
 $inputHash = Get-LeafCredentialVaultHash (($inputs.Keys | Sort-Object | ForEach-Object { $_ + '=' + $inputs[$_] }) -join "`n")
 
@@ -197,6 +245,12 @@ try {
     if ($vault -and ($vault.tags['managed-by'] -cne 'bicep' -or $vault.tags.workload -cne 'identity')) { throw 'UnownedExistingVaultCannotBeAdopted' }
     $privateTargetHash = Get-LeafCredentialVaultHash ($settings.TARGET_TENANT_ID + '/' + $settings.TARGET_SUBSCRIPTION_ID)
     $plan = if (Test-Path -LiteralPath $planPath) { Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json -AsHashtable -DateKind String } else { $null }
+    if ($ReconcilePrivateIntent -and $planPath -ceq $publicPlanPath) {
+        if (-not $vault) { throw 'PrivateIntentReadbackRequiresExistingCreatedVault' }
+        $plan = New-LeafPrivateCredentialVaultPlan $plan ([IO.File]::ReadAllText($template)) $sourceHash $inputHash $privateTargetHash $vaultId (Get-FileHash -LiteralPath $publicPlanPath -Algorithm SHA256).Hash
+        $planPath = $privatePlanPath
+    }
+    if ($planPath -ceq $privatePlanPath -and (-not (Test-Path -LiteralPath $publicPlanPath) -or $plan.publicIntentPlanHash -cne (Get-FileHash -LiteralPath $publicPlanPath -Algorithm SHA256).Hash)) { throw 'OriginalPublicIntentEvidenceMustRemainUnchanged' }
     if (($Mode -cne 'Preview' -or $plan) -and (-not $plan -or $plan.sourceHash -cne $sourceHash -or $plan.inputHash -cne $inputHash -or $plan.targetHash -cne $privateTargetHash -or $plan.vaultId -ine $vaultId)) { throw 'MatchingPrivateCredentialVaultPreviewRequired' }
     if ($vault -and (-not $plan -or $plan.status -cnotin @('Applying', 'AppliedAwaitingVerification', 'Verified'))) { throw 'ExistingVaultWithoutMatchingCreationReceiptCannotBeAdopted' }
     $ready = $false
@@ -208,7 +262,7 @@ try {
     if ($ready) {
         $plan.status = 'Verified'
         Save-LeafCredentialVaultPlan
-        [pscustomobject]@{ Status = 'NoChange'; VaultAndScopedRoleVerified = $true; FirewallExactClientOnly = $true; SecretValuesRequested = $false; CloudChanges = 0 }
+        [pscustomobject]@{ Status = 'NoChange'; VaultAndScopedRoleVerified = $true; PublicNetworkDisabled = $true; FirewallExactClientOnly = $true; DataPlaneAccessVerified = $false; SecretValuesRequested = $false; CloudChanges = 0 }
         return
     }
     if ($Mode -ceq 'Verify') { throw 'CredentialVaultReadbackDoesNotMatchDesiredState' }
