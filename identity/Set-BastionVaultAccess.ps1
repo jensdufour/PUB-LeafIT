@@ -3,6 +3,7 @@
 param(
     [ValidateSet('Preview', 'Open', 'Close', 'Readback', 'Probe')][string]$Mode = 'Preview',
     [switch]$DiagnosticReapplication,
+    [switch]$ServiceObservedSource,
     [switch]$OperatorApproved,
     [ValidatePattern('^(?:|[a-f0-9]{32})$')][string]$ProbeRunId = '',
     [switch]$CheckOnly
@@ -11,6 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $Mode = $Mode.Substring(0, 1).ToUpperInvariant() + $Mode.Substring(1).ToLowerInvariant()
 if (($Mode -ceq 'Probe' -or $DiagnosticReapplication) -and -not $OperatorApproved) { throw 'ExplicitDiagnosticProbeApprovalRequired' }
+if ($ServiceObservedSource -and (-not $DiagnosticReapplication -or -not $OperatorApproved)) { throw 'ExplicitReviewedServiceSourceDiagnosticRequired' }
 $repo = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'Target.ps1')
 
@@ -31,10 +33,14 @@ function Get-LeafVaultWindowHash {
 }
 
 function New-LeafVaultWindowAcl {
-    param([string]$Address)
-    $parsed = [Net.IPAddress]::None
-    if (-not [Net.IPAddress]::TryParse($Address, [ref]$parsed) -or $parsed.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or $parsed.ToString() -cne $Address -or $Address -match '^(0\.|10\.|127\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|22[4-9]\.|2[3-5][0-9]\.)') { throw 'ExactPublicClientIpv4Required' }
-    return @{ defaultAction = 'Deny'; bypass = 'None'; ipRules = @(@{ value = $Address + '/32' }); virtualNetworkRules = @() }
+    param([string[]]$Address)
+    if ($Address.Count -lt 1 -or $Address.Count -gt 2 -or @($Address | Sort-Object -Unique).Count -ne $Address.Count) { throw 'OneOrTwoExactObservedEgressAddressesRequired' }
+    $rules = @(foreach ($currentAddress in $Address) {
+        $parsed = [Net.IPAddress]::None
+        if (-not [Net.IPAddress]::TryParse($currentAddress, [ref]$parsed) -or $parsed.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or $parsed.ToString() -cne $currentAddress -or $currentAddress -match '^(0\.|10\.|127\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|22[4-9]\.|2[3-5][0-9]\.)') { throw 'ExactPublicClientIpv4Required' }
+        @{ value = $currentAddress + '/32' }
+    })
+    return @{ defaultAction = 'Deny'; bypass = 'None'; ipRules = $rules; virtualNetworkRules = @() }
 }
 
 function Get-LeafVaultWindowNetworkHash {
@@ -46,7 +52,7 @@ function Get-LeafVaultWindowNetworkHash {
         if ([Net.IPAddress]::TryParse($value, [ref]$address) -and $address.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork -and $address.ToString() -ceq $value) { $value += '/32' }
         @{ value = $value }
     })
-    return Get-LeafVaultWindowHash @{ defaultAction = $Acl.defaultAction; bypass = $Acl.bypass; ipRules = $rules; virtualNetworkRules = @($Acl.virtualNetworkRules | Where-Object { $null -ne $_ }) }
+    return Get-LeafVaultWindowHash @{ defaultAction = $Acl.defaultAction; bypass = $Acl.bypass; ipRules = @($rules | Sort-Object value); virtualNetworkRules = @($Acl.virtualNetworkRules | Where-Object { $null -ne $_ }) }
 }
 
 function Test-LeafVaultWindowExclusion {
@@ -96,6 +102,16 @@ if ($CheckOnly) {
     $nested.InnerException.Body.error.innererror.code = 'ForbiddenByRbac'
     if ((Get-LeafVaultListFailure $nested) -cne 'ForbiddenByRbac') { throw 'RbacListErrorMustRemainDistinctFromNetwork' }
     $checks += 2
+    $dual = New-LeafVaultWindowAcl @('203.0.113.8', '203.0.113.9')
+    if ($dual.ipRules.Count -ne 2 -or @($dual.ipRules | Where-Object { $_.value -cnotmatch '/32$' }).Count) { throw 'TwoObservedSourcesMustRemainHostOnlyRules' }
+    if ((Get-LeafVaultWindowNetworkHash $dual) -cne (Get-LeafVaultWindowNetworkHash (New-LeafVaultWindowAcl @('203.0.113.9', '203.0.113.8')))) { throw 'HostAllowRuleOrderingMustNotCauseFalseDrift' }
+    $checks++
+    foreach ($bad in @(@('203.0.113.8', '203.0.113.8'), @('203.0.113.8', '203.0.113.9', '203.0.113.10'))) {
+        $rejected = $false
+        try { $null = New-LeafVaultWindowAcl $bad } catch { $rejected = $true }
+        if (-not $rejected) { throw 'DuplicateOrAdditionalEgressSourceFixtureAccepted' }
+        $checks++
+    }
     [pscustomobject]@{ Status = 'VaultWindowOfflineChecksPassed'; Checks = $checks; CloudRequests = 0; SecretValuesRequested = $false }
     return
 }
@@ -122,16 +138,16 @@ function Save-LeafVaultWindowState {
 
 if ($Mode -ceq 'Probe') {
     $folder = Join-Path $repo 'private/identity/keyvault'
-    $resultPath = Join-Path $folder 'vault-metadata-probe-result.json'
-    $diagnosticPath = Join-Path $folder 'vault-window-diagnostic-state.json'
+    $resultPath = Join-Path $folder $(if ($ServiceObservedSource) { 'vault-service-source-probe-result.json' } else { 'vault-metadata-probe-result.json' })
+    $diagnosticPath = Join-Path $folder $(if ($ServiceObservedSource) { 'vault-window-service-source-state.json' } else { 'vault-window-diagnostic-state.json' })
     if (Test-Path -LiteralPath $diagnosticPath) { throw 'ExistingDiagnosticWindowNeedsReadbackNotAnotherProbe' }
     $claim = [IO.File]::Open($resultPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     $runId = [guid]::NewGuid().ToString('N')
     $result = [ordered]@{ Status = 'VaultMetadataProbe'; ListSucceeded = $false; ErrorClass = 'NotRun'; VaultPrivateAfterProbe = $false; SecretValuesRequested = $false; RdpOrLoginAttempted = $false; OriginalExceptionEpochPreserved = $true }
     try {
-        $opened = & $PSCommandPath -Mode Open -DiagnosticReapplication -OperatorApproved -ProbeRunId $runId
+        $opened = & $PSCommandPath -Mode Open -DiagnosticReapplication -ServiceObservedSource:$ServiceObservedSource -OperatorApproved -ProbeRunId $runId
         if ($opened.Status -cne 'VaultWindowOpen') { throw 'MetadataProbeWindowNotVerified' }
-        $review = Get-Content -LiteralPath (Join-Path $folder 'vault-window-review.json') -Raw | ConvertFrom-Json -AsHashtable -DateKind String
+        $review = Get-Content -LiteralPath (Join-Path $folder $(if ($ServiceObservedSource) { 'vault-window-service-source-review.json' } else { 'vault-window-review.json' })) -Raw | ConvertFrom-Json -AsHashtable -DateKind String
         $context = Get-AzContext
         try {
             $items = @(Get-AzKeyVaultSecret -VaultName (([string]$review.vaultId -split '/')[-1]) -DefaultProfile $context -ErrorAction Stop)
@@ -145,7 +161,7 @@ if ($Mode -ceq 'Probe') {
             if (Test-Path -LiteralPath $diagnosticPath) {
                 $owned = Get-Content -LiteralPath $diagnosticPath -Raw | ConvertFrom-Json -AsHashtable -Depth 40 -DateKind String
                 if ($owned.probeRunId -ceq $runId) {
-                    $closed = & $PSCommandPath -Mode Close -DiagnosticReapplication -OperatorApproved -ProbeRunId $runId
+                    $closed = & $PSCommandPath -Mode Close -DiagnosticReapplication -ServiceObservedSource:$ServiceObservedSource -OperatorApproved -ProbeRunId $runId
                     $result.VaultPrivateAfterProbe = $closed.Status -ceq 'VaultWindowClosed' -and $closed.PublicNetworkDisabled -ceq $true
                 } else { $result['CleanupOwnershipMismatch'] = $true }
             }
@@ -167,7 +183,7 @@ try {
     $context = Get-AzContext
     Assert-LeafTargetContext $settings $context
     $folder = Join-Path $repo 'private/identity/keyvault'
-    $review = Get-Content -LiteralPath (Join-Path $folder 'vault-window-review.json') -Raw | ConvertFrom-Json -AsHashtable -Depth 40 -DateKind String
+    $review = Get-Content -LiteralPath (Join-Path $folder $(if ($ServiceObservedSource) { 'vault-window-service-source-review.json' } else { 'vault-window-review.json' })) -Raw | ConvertFrom-Json -AsHashtable -Depth 40 -DateKind String
     $plan = Get-Content -LiteralPath (Join-Path $folder 'private-intent-plan.json') -Raw | ConvertFrom-Json -AsHashtable -DateKind String
     if ($review.vaultId -ine $plan.vaultId -or $review.tenantId -ine $settings.TARGET_TENANT_ID -or $review.subscriptionId -ine $settings.TARGET_SUBSCRIPTION_ID -or ($Mode -cnotin @('Close', 'Readback') -and $review.sourceHash -cne (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash)) { throw 'MatchingExactVaultWindowReviewRequired' }
     $inputs = @{}
@@ -183,12 +199,19 @@ try {
     $tagValue = $inputs.TARGET_IDENTITY_VAULT_WINDOW_TAG_VALUE
     if ($Mode -cnotin @('Close', 'Readback') -and (Get-LeafVaultWindowHash $inputs) -cne $review.tagInputsHash) { throw 'VaultWindowTagInputsChanged' }
     $originalStatePath = Join-Path $folder 'vault-window-state.json'
-    $statePath = if ($DiagnosticReapplication) { Join-Path $folder 'vault-window-diagnostic-state.json' } else { $originalStatePath }
+    $statePath = if ($ServiceObservedSource) { Join-Path $folder 'vault-window-service-source-state.json' } elseif ($DiagnosticReapplication) { Join-Path $folder 'vault-window-diagnostic-state.json' } else { $originalStatePath }
     $originalState = $null
     if ($DiagnosticReapplication -and $Mode -cnotin @('Close', 'Readback')) {
         $originalState = Get-Content -LiteralPath $originalStatePath -Raw | ConvertFrom-Json -AsHashtable -Depth 40 -DateKind String
         $guide = Get-Content -LiteralPath (Join-Path $repo 'private/nme-governance.json') -Raw | ConvertFrom-Json -AsHashtable -Depth 80 -DateKind String
         if ($originalState.status -cne 'Closed' -or $originalState.pendingAction -or $originalState.vaultId -ine $review.vaultId -or (Get-LeafVaultWindowHash $originalState) -cne $review.originalClosedWindowHash -or [DateTimeOffset]::Parse($originalState.requestedUtc).UtcDateTime.Date -ne [DateTime]::UtcNow.Date -or $guide.validity.reapplicationResetsFullWindow -cne $false -or $guide.validity.fullWindowsPerTrackedResourceOrGroup -ne 1 -or $review.briefDiagnosticReapplicationReviewed -cne $true) { throw 'SameOriginalClosedExceptionEpochRequiredForDiagnostic' }
+        if ($ServiceObservedSource) {
+            $failure = Get-Content -LiteralPath (Join-Path $folder 'vault-metadata-probe-result.json') -Raw | ConvertFrom-Json -AsHashtable -DateKind String
+            $previous = Get-Content -LiteralPath (Join-Path $folder 'vault-window-diagnostic-state.json') -Raw | ConvertFrom-Json -AsHashtable -Depth 40 -DateKind String
+            $comparison = Get-Content -LiteralPath (Join-Path $folder 'firewall-source-comparison.json') -Raw | ConvertFrom-Json -AsHashtable -DateKind String
+            $addressHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes([string]$review.serviceObservedIpv4)))
+            if ($failure.ErrorClass -cne 'ForbiddenByFirewall' -or $failure.VaultPrivateAfterProbe -cne $true -or $previous.status -cne 'Closed' -or $previous.pendingAction -or $comparison.ServerClientAddressMatchesReviewedIp -cne $false -or $comparison.ServerAddressHash -cne $addressHash -or $review.serviceSourceCorrectionReviewed -cne $true) { throw 'ExactClosedFirewallFailureAndObservedSourceProofRequired' }
+        }
     }
     $lock = [IO.File]::Open((Join-Path $folder 'vault-window.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     try {
@@ -249,10 +272,12 @@ try {
         if ($operator.Id -ine $review.operatorId -or $operator.UserPrincipalName -ine $context.Account.Id) { throw 'ReviewedVaultPickerOperatorRequired' }
         $address = Invoke-RestMethod -Uri 'https://api4.ipify.org?format=json' -ErrorAction Stop
         if ([string]$address.ip -cne $review.clientIpv4) { throw 'ReviewedVaultWindowClientChanged' }
-        $acl = New-LeafVaultWindowAcl $review.clientIpv4
+        $addresses = @($review.clientIpv4)
+        if ($ServiceObservedSource) { $addresses += [string]$review.serviceObservedIpv4 }
+        $acl = New-LeafVaultWindowAcl $addresses
         if ($vault.properties.publicNetworkAccess -cne 'Disabled' -or $vault.tags.ContainsKey($tagName) -or $vault.properties.networkAcls.defaultAction -cne 'Deny' -or $vault.properties.networkAcls.bypass -cne 'None') { throw 'ExactPrivateVaultWithoutPriorExceptionRequired' }
         if ($Mode -ceq 'Preview') {
-            [pscustomobject]@{ Status = 'VaultWindowPreviewReady'; OneVaultOnly = $true; CurrentClientIpv4Only = $true; ExistingSecretRolesUnchanged = $true; RequestedSeconds = 60; AutomaticExpiry = $false; ExplicitCloseRequired = $true; CloudChanges = 0; SecretValuesRequested = $false }
+            [pscustomobject]@{ Status = 'VaultWindowPreviewReady'; OneVaultOnly = $true; ObservedClientEgressOnly = $true; AllowedHostAddressCount = $addresses.Count; ExistingSecretRolesUnchanged = $true; RequestedSeconds = 60; AutomaticExpiry = $false; ExplicitCloseRequired = $true; CloudChanges = 0; SecretValuesRequested = $false }
             return
         }
         $state = @{ status = 'OpeningNoReplay'; vaultId = $review.vaultId; originalNetworkAcls = $vault.properties.networkAcls; originalNetworkHash = Get-LeafVaultWindowNetworkHash $vault.properties.networkAcls; openNetworkHash = Get-LeafVaultWindowNetworkHash $acl; tagInputsHash = Get-LeafVaultWindowHash $inputs; requestedUtc = [DateTimeOffset]::UtcNow.ToString('o'); requestedCloseUtc = [DateTimeOffset]::UtcNow.AddSeconds(60).ToString('o'); automaticExpiry = $false; originalExceptionEpoch = $(if ($originalState) { $originalState.requestedUtc } else { [DateTimeOffset]::UtcNow.ToString('o') }); probeRunId = $ProbeRunId }
@@ -263,7 +288,7 @@ try {
         if ($vault.properties.publicNetworkAccess -cne 'Enabled' -or $vault.tags[$tagName] -cne $tagValue -or (Get-LeafVaultWindowNetworkHash $vault.properties.networkAcls) -cne (Get-LeafVaultWindowNetworkHash $acl)) { throw 'VaultWindowOpenReadbackMismatchCloseBeforeRetry' }
         $state.status = 'Open'
         Save-LeafVaultWindowState
-        [pscustomobject]@{ Status = 'VaultWindowOpen'; CurrentClientIpv4Only = $true; DefaultDenyNoBypass = $true; SecretRolesUnchanged = $true; AutomaticExpiry = $false; ExplicitCloseRequired = $true; SecretValuesRequested = $false }
+        [pscustomobject]@{ Status = 'VaultWindowOpen'; ObservedClientEgressOnly = $true; AllowedHostAddressCount = $addresses.Count; DefaultDenyNoBypass = $true; SecretRolesUnchanged = $true; AutomaticExpiry = $false; ExplicitCloseRequired = $true; SecretValuesRequested = $false }
     } finally { $lock.Dispose() }
 } catch {
     $safe = [string]$_.Exception.Message
